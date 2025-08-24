@@ -50,7 +50,10 @@ def switch_load_balancing_loss_func(
                                              Defaults to None.
 
     Returns:
-        torch.Tensor: The auxiliary loss for load balancing.
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+            - aux_loss: The auxiliary loss for load balancing
+            - load_balancing_entropy: Shannon entropy of expert utilization probabilities  
+            - token_assignment_entropy: Shannon entropy of actual token assignments
     """
     num_sub_sequence = 1
 
@@ -70,10 +73,26 @@ def switch_load_balancing_loss_func(
     # (tokens_per_expert/(num_tokens*topk))) * num_experts * moe_aux_loss_coeff.
     # This can be simplified to fuse the division and multiplication operations.
     aggregated_probs_per_expert = probs.sum(dim=0)
+    
+    # Calculate entropy of load balancing
+    # Normalize the aggregated probabilities to get the expert utilization distribution
+    expert_utilization = aggregated_probs_per_expert / (aggregated_probs_per_expert.sum() + 1e-10)
+    
+    # Calculate Shannon entropy: H = -sum(p * log(p))
+    # Add small epsilon to avoid log(0)
+    epsilon = 1e-10
+    expert_utilization = expert_utilization + epsilon
+    load_balancing_entropy = -torch.sum(expert_utilization * torch.log(expert_utilization))
+    
+    # Also calculate entropy based on actual token assignments
+    token_assignment_dist = tokens_per_expert.float() / (tokens_per_expert.sum() + 1e-10)
+    token_assignment_dist = token_assignment_dist + epsilon
+    token_assignment_entropy = -torch.sum(token_assignment_dist * torch.log(token_assignment_dist))
+    
     aux_loss = torch.sum(aggregated_probs_per_expert * tokens_per_expert) * (
         num_experts * moe_aux_loss_coeff / (num_tokens * num_tokens * topk)
     )
-    return aux_loss
+    return aux_loss, load_balancing_entropy, token_assignment_entropy
 
 
 def sequence_load_balancing_loss_func(
@@ -104,7 +123,10 @@ def sequence_load_balancing_loss_func(
                                              Defaults to None.
 
     Returns:
-        torch.Tensor: The sequence auxiliary loss for load balancing.
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+            - seq_aux_loss: The sequence auxiliary loss for load balancing
+            - load_balancing_entropy: Shannon entropy of expert utilization probabilities
+            - token_assignment_entropy: Shannon entropy of actual token assignments
     """
     num_sub_sequence = 1
     num_experts = probs.shape[1]
@@ -126,7 +148,23 @@ def sequence_load_balancing_loss_func(
     seq_aux_loss = (cost_coeff * probs_for_aux_loss.mean(dim=0)).sum(dim=1).mean()
     seq_aux_loss *= moe_aux_loss_coeff
 
-    return seq_aux_loss
+    # Calculate entropy metrics for sequence-level load balancing
+    # Use the original probs tensor for entropy calculation
+    aggregated_probs_per_expert = probs.sum(dim=0)
+    
+    # Calculate Shannon entropy for expert utilization
+    expert_utilization = aggregated_probs_per_expert / (aggregated_probs_per_expert.sum() + 1e-10)
+    epsilon = 1e-10
+    expert_utilization = expert_utilization + epsilon
+    load_balancing_entropy = -torch.sum(expert_utilization * torch.log(expert_utilization))
+    
+    # Calculate entropy based on routing map (actual assignments)
+    tokens_per_expert = routing_map.sum(dim=0)
+    token_assignment_dist = tokens_per_expert.float() / (tokens_per_expert.sum() + 1e-10)
+    token_assignment_dist = token_assignment_dist + epsilon
+    token_assignment_entropy = -torch.sum(token_assignment_dist * torch.log(token_assignment_dist))
+
+    return seq_aux_loss, load_balancing_entropy, token_assignment_entropy
 
 
 def z_loss_func(logits, z_loss_coeff):

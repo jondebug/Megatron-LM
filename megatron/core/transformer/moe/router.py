@@ -305,9 +305,32 @@ class TopKRouter(Router):
         if self.tp_cp_group.size() > 1:
             sequence_partition_group = self.tp_cp_group
 
-        aux_loss = load_balancing_loss_func(
+        aux_loss_result = load_balancing_loss_func(
             moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
         )
+        
+        # Handle both old and new return formats for backward compatibility
+        if isinstance(aux_loss_result, tuple) and len(aux_loss_result) == 3:
+            aux_loss, load_balancing_entropy, token_assignment_entropy = aux_loss_result
+            
+            # Log the entropy values
+            save_to_aux_losses_tracker(
+                "load_balancing_entropy",
+                load_balancing_entropy,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+            save_to_aux_losses_tracker(
+                "token_assignment_entropy", 
+                token_assignment_entropy,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+        else:
+            aux_loss = aux_loss_result
+        
         save_to_aux_losses_tracker(
             "load_balancing_loss",
             aux_loss / moe_aux_loss_coeff,
