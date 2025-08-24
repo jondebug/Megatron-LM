@@ -310,10 +310,43 @@ class TopKRouter(Router):
         )
         
         # Handle both old and new return formats for backward compatibility
-        if isinstance(aux_loss_result, tuple) and len(aux_loss_result) == 3:
-            aux_loss, load_balancing_entropy, token_assignment_entropy = aux_loss_result
+        if isinstance(aux_loss_result, tuple) and len(aux_loss_result) == 5:
+            aux_loss, load_balancing_entropy, token_assignment_entropy, max_tokens_per_expert, min_tokens_per_expert = aux_loss_result
             
             # Log the entropy values
+            save_to_aux_losses_tracker(
+                "load_balancing_entropy",
+                load_balancing_entropy,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+            save_to_aux_losses_tracker(
+                "token_assignment_entropy", 
+                token_assignment_entropy,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+            # Log the max and min tokens per expert
+            save_to_aux_losses_tracker(
+                "max_tokens_per_expert",
+                max_tokens_per_expert,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+            save_to_aux_losses_tracker(
+                "min_tokens_per_expert",
+                min_tokens_per_expert,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
+        elif isinstance(aux_loss_result, tuple) and len(aux_loss_result) == 3:
+            aux_loss, load_balancing_entropy, token_assignment_entropy = aux_loss_result
+            
+            # Log the entropy values (backward compatibility)
             save_to_aux_losses_tracker(
                 "load_balancing_entropy",
                 load_balancing_entropy,

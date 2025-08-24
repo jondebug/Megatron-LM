@@ -50,10 +50,12 @@ def switch_load_balancing_loss_func(
                                              Defaults to None.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
             - aux_loss: The auxiliary loss for load balancing
             - load_balancing_entropy: Shannon entropy of expert utilization probabilities  
             - token_assignment_entropy: Shannon entropy of actual token assignments
+            - max_tokens_per_expert: Maximum number of tokens assigned to any expert
+            - min_tokens_per_expert: Minimum number of tokens assigned to any expert
     """
     num_sub_sequence = 1
 
@@ -89,10 +91,14 @@ def switch_load_balancing_loss_func(
     token_assignment_dist = token_assignment_dist + epsilon
     token_assignment_entropy = -torch.sum(token_assignment_dist * torch.log(token_assignment_dist))
     
+    # Calculate max and min tokens per expert for load balancing analysis
+    max_tokens_per_expert = torch.max(tokens_per_expert)
+    min_tokens_per_expert = torch.min(tokens_per_expert)
+    
     aux_loss = torch.sum(aggregated_probs_per_expert * tokens_per_expert) * (
         num_experts * moe_aux_loss_coeff / (num_tokens * num_tokens * topk)
     )
-    return aux_loss, load_balancing_entropy, token_assignment_entropy
+    return aux_loss, load_balancing_entropy, token_assignment_entropy, max_tokens_per_expert, min_tokens_per_expert
 
 
 def sequence_load_balancing_loss_func(
@@ -123,10 +129,12 @@ def sequence_load_balancing_loss_func(
                                              Defaults to None.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
             - seq_aux_loss: The sequence auxiliary loss for load balancing
             - load_balancing_entropy: Shannon entropy of expert utilization probabilities
             - token_assignment_entropy: Shannon entropy of actual token assignments
+            - max_tokens_per_expert: Maximum number of tokens assigned to any expert
+            - min_tokens_per_expert: Minimum number of tokens assigned to any expert
     """
     num_sub_sequence = 1
     num_experts = probs.shape[1]
@@ -164,7 +172,11 @@ def sequence_load_balancing_loss_func(
     token_assignment_dist = token_assignment_dist + epsilon
     token_assignment_entropy = -torch.sum(token_assignment_dist * torch.log(token_assignment_dist))
 
-    return seq_aux_loss, load_balancing_entropy, token_assignment_entropy
+    # Calculate max and min tokens per expert for load balancing analysis
+    max_tokens_per_expert = torch.max(tokens_per_expert)
+    min_tokens_per_expert = torch.min(tokens_per_expert)
+
+    return seq_aux_loss, load_balancing_entropy, token_assignment_entropy, max_tokens_per_expert, min_tokens_per_expert
 
 
 def z_loss_func(logits, z_loss_coeff):
