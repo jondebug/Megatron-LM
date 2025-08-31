@@ -313,6 +313,14 @@ class TopKRouter(Router):
         if isinstance(aux_loss_result, tuple) and len(aux_loss_result) == 5:
             aux_loss, load_balancing_entropy, token_assignment_entropy, max_tokens_per_expert, min_tokens_per_expert = aux_loss_result
             
+
+            save_to_aux_losses_tracker(
+                "aux_loss",
+                aux_loss,
+                self.layer_number,
+                self.config.num_layers,
+                reduce_group=sequence_partition_group,
+            )
             # Log the entropy values
             save_to_aux_losses_tracker(
                 "load_balancing_entropy",
