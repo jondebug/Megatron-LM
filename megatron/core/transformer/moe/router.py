@@ -21,6 +21,14 @@ from megatron.core.transformer.moe.moe_utils import (
 )
 from megatron.core.transformer.transformer_config import TransformerConfig
 
+# Optional RL trajectory tracking
+try:
+    # Import only if available in the environment
+    from megatron_patch.model.qwen3_moe.moe.rl_trajectory import get_trajectory_tracker  # type: ignore  # noqa: F401
+    _TRAJECTORY_AVAILABLE = True
+except Exception:
+    _TRAJECTORY_AVAILABLE = False
+
 
 class Router(ABC, MegatronModule):
     """Base Router class"""
@@ -127,6 +135,14 @@ class TopKRouter(Router):
         self.routing_type = self.config.moe_router_load_balancing_type
         self.score_function = self.config.moe_router_score_function
         self.input_jitter = None
+
+        # RL trajectory tracking (enabled via config.moe_router_use_trajectory_tracking)
+        self._trajectory_tracker = None
+        self._use_trajectory_tracking = getattr(self.config, 'moe_router_use_trajectory_tracking', False)
+        print(f"[RL DEBUG] Using RL trajectory tracking object: {self._use_trajectory_tracking}, _TRAJECTORY_AVAILABLE: {_TRAJECTORY_AVAILABLE}")
+        if self._use_trajectory_tracking and _TRAJECTORY_AVAILABLE:
+            from megatron_patch.model.qwen3_moe.moe.rl_trajectory import get_trajectory_tracker  # type: ignore
+            self._trajectory_tracker = get_trajectory_tracker()
 
         self.enable_expert_bias = self.config.moe_router_enable_expert_bias
         if self.enable_expert_bias:
@@ -485,6 +501,19 @@ class TopKRouter(Router):
             )
         else:
             raise ValueError(f"Unsupported MoE routing type: {self.routing_type}")
+        # Track trajectory if enabled (for RL losses)
+        if self._use_trajectory_tracking and self._trajectory_tracker is not None:
+            # Store logits and routing decisions for trajectory tracking
+            original_logits = logits.view(seq_length, bsz, -1)
+            self._trajectory_tracker.add_layer_decision(
+                layer_num=self.layer_number,
+                logits=original_logits,
+                routing_map=routing_map.view(seq_length, bsz, -1),
+                scores=scores,
+            )
+            print(f"[RL DEBUG] Layer {self.layer_number}: Trajectory decision added")
+
+
         # Prevent extra local tokens accumulation on evaluation or activation recomputation
         if self.enable_expert_bias and torch.is_grad_enabled():
             with torch.no_grad():
