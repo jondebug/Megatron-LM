@@ -511,7 +511,7 @@ class TopKRouter(Router):
                 routing_map=routing_map.view(seq_length, bsz, -1),
                 scores=scores,
             )
-            print(f"[RL DEBUG] Layer {self.layer_number}: Trajectory decision added")
+            # print(f"[RL DEBUG] Layer {self.layer_number}: Trajectory decision added")
 
 
         # Prevent extra local tokens accumulation on evaluation or activation recomputation
