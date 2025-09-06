@@ -549,6 +549,11 @@ class TopKRouter(Router):
                 print(f"[RL DEBUG] layer=1 router.weight norm={w.norm().item():.6e} mean={w.mean().item():.6e} std={w.std().item():.6e}")
 
 
+        # --- RL DEBUG: Check gradient status of gating inputs ---
+        if self.layer_number == 1:
+            from megatron.training.utils import print_rank_0
+            print_rank_0(f"[RL DBG Router L{self.layer_number}] PRE-GATING: input.requires_grad={input.requires_grad}, self.weight.requires_grad={self.weight.requires_grad}")
+
         # Apply input jitter
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
