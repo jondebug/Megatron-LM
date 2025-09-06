@@ -1416,6 +1416,22 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
 
+    # [RL DEBUG] Reliable grad check after backward pass is complete.
+    if args.use_rl_loss:
+        try:
+            from megatron.training.utils import print_rank_0
+            from megatron.core import parallel_state as mpu
+            if mpu.get_data_parallel_rank() == 0:
+                # Note: This path assumes a specific model structure. Adjust if your model differs.
+                first_router_grad = model[0].language_model.encoder.layers[0].mlp.router.weight.grad
+                if first_router_grad is not None:
+                    grad_norm = first_router_grad.norm().item()
+                    print_rank_0(f"[RL GRAD CHECK] Layer 1 router grad norm: {grad_norm:.6e}")
+                else:
+                    print_rank_0("[RL GRAD CHECK] Layer 1 router grad is None")
+        except Exception as e:
+            print_rank_0(f"[RL GRAD CHECK] Error accessing grad: {e}")
+
     # Update parameters.
 
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
