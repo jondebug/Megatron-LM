@@ -7,6 +7,7 @@ from typing import Callable, Optional
 import torch
 
 from megatron.core.transformer.module import MegatronModule
+from megatron.core import parallel_state
 from megatron.core.transformer.moe.moe_utils import (
     ModelCommProcessGroups,
     MoEAuxLossAutoScaler,
@@ -501,6 +502,18 @@ class TopKRouter(Router):
             )
         else:
             raise ValueError(f"Unsupported MoE routing type: {self.routing_type}")
+        # Log number of tokens routed to experts that are local to this rank (per layer)
+        print(f"[RL DEBUG] Routing map shape: {routing_map.shape}")
+        print(f"[RL DEBUG] Routing map: {routing_map}")
+        # Metric: number of tokens routed to expert 0 (column 0)
+        tokens_to_expert0 = routing_map[:, 0].sum()
+        save_to_aux_losses_tracker(
+            "tokens_routed_to_expert_0",
+            tokens_to_expert0,
+            self.layer_number,
+            self.config.num_layers,
+        )
+
         # Track trajectory if enabled (for RL losses)
         if self._use_trajectory_tracking and self._trajectory_tracker is not None:
             # Store logits and routing decisions for trajectory tracking
