@@ -117,24 +117,6 @@ class Router(ABC, MegatronModule):
     def set_layer_number(self, layer_number: int):
         """Set the layer number for the router."""
         self.layer_number = layer_number
-        # Optional: print grad norm for layer-1 router weights during backward
-        # Enable by setting environment variable DEBUG_PRINT_ROUTER1_GRAD=1
-        if (
-            self.layer_number == 1
-            and not hasattr(self, "_grad_print_hook_set")
-        ):
-            def _print_router_weight_grad(grad):
-                try:
-                    from megatron.core import parallel_state as mpu
-                    if mpu.get_data_parallel_rank() != 0:
-                        return
-                except Exception:
-                    pass
-                norm = grad.norm().item() if grad is not None else float("nan")
-                print(f"[RL GRAD] layer=1 router.weight grad norm={norm:.6e}")
-
-            self.weight.register_hook(_print_router_weight_grad)
-            self._grad_print_hook_set = True
 
 
 
