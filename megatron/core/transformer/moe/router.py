@@ -89,6 +89,15 @@ class Router(ABC, MegatronModule):
         elif self.config.moe_router_dtype == 'fp64':
             router_dtype = torch.float64
         logits = router_gating_linear(input, self.weight, router_dtype)
+
+        # --- RL DEBUG FIX ---
+        # The `router_gating_linear` function can break the gradient chain under activation
+        # checkpointing. If the inputs require gradients but the output does not, we
+        # manually reconstruct the gradient path.
+        if (input.requires_grad or self.weight.requires_grad) and not logits.requires_grad:
+            # Re-running the operation. Adding zero is a no-op that preserves the graph.
+            logits = router_gating_linear(input + 0, self.weight + 0, router_dtype)
+
         return logits
 
     @abstractmethod
