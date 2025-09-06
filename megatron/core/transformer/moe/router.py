@@ -141,7 +141,6 @@ class TopKRouter(Router):
         # RL trajectory tracking (enabled via config.moe_router_use_trajectory_tracking)
         self._trajectory_tracker = None
         self._use_trajectory_tracking = getattr(self.config, 'moe_router_use_trajectory_tracking', False)
-        print(f"[RL DEBUG] Using RL trajectory tracking object: {self._use_trajectory_tracking}, _TRAJECTORY_AVAILABLE: {_TRAJECTORY_AVAILABLE}")
         if self._use_trajectory_tracking and _TRAJECTORY_AVAILABLE:
             from megatron_patch.model.qwen3_moe.moe.rl_trajectory import get_trajectory_tracker  # type: ignore
             self._trajectory_tracker = get_trajectory_tracker()
@@ -462,16 +461,12 @@ class TopKRouter(Router):
         else:
             return input
 
-    def routing(self, logits: torch.Tensor):
+    def routing(self, logits: torch.Tensor, original_logits_for_rl: torch.Tensor):
         """Top-k routing function
 
         Args:
             logits (torch.Tensor): Logits tensor after gating.
-
-        Returns:
-            probs (torch.Tensor): The probabilities of token to experts assignment.
-            routing_map (torch.Tensor): The mapping of token to experts assignment,
-                with shape [num_tokens, num_experts].
+            original_logits_for_rl (torch.Tensor): The original, unmodified logits for RL trajectory tracking.
         """
         seq_length, bsz = logits.shape[:2]
         logits = logits.view(-1, self.config.num_moe_experts)
@@ -517,16 +512,17 @@ class TopKRouter(Router):
         if self._use_trajectory_tracking and self._trajectory_tracker is not None:
             # [RL DEBUG] Print the gradient status in every forward pass to observe the effect of activation checkpointing.
             from megatron.training.utils import print_rank_0
-            print_rank_0(f"[RL DBG Router L{self.layer_number}] torch.is_grad_enabled()={torch.is_grad_enabled()}, logits.requires_grad={logits.requires_grad}")
+            print_rank_0(f"[RL DBG Router L{self.layer_number}] torch.is_grad_enabled()={torch.is_grad_enabled()}, logits.requires_grad={original_logits_for_rl.requires_grad}")
 
             # Only record the trajectory during the recomputation forward pass when gradients are enabled.
             # This is critical for compatibility with activation checkpointing.
             if torch.is_grad_enabled():
                 # Store logits and routing decisions for trajectory tracking
-                original_logits = logits.view(seq_length, bsz, -1)
+                # Use the original, unmodified logits for the trajectory
+                logits_for_rl = original_logits_for_rl.view(seq_length, bsz, -1)
                 self._trajectory_tracker.add_layer_decision(
                     layer_num=self.layer_number,
-                    logits=original_logits,
+                    logits=logits_for_rl,
                     routing_map=routing_map.view(seq_length, bsz, -1),
                     scores=scores,
                 )
@@ -564,6 +560,7 @@ class TopKRouter(Router):
             # Apply force load balancing with random logits for benchmark
             logits = apply_random_logits(logits)
 
-        scores, routing_map = self.routing(logits)
+        # Pass a clone of the original logits for RL tracking before they are modified by aux losses.
+        scores, routing_map = self.routing(logits, original_logits_for_rl=logits.clone())
 
         return scores, routing_map
