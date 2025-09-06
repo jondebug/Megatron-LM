@@ -560,6 +560,15 @@ class TopKRouter(Router):
         """
         self._maintain_float32_expert_bias()
 
+        # Debug: print layer-1 router weight stats each forward to observe changes across steps
+        if getattr(self, "layer_number", None) == 1:
+            from megatron.core import parallel_state as mpu
+            if mpu.get_data_parallel_rank() == 0 and self.weight is not None:
+                w = self.weight.data
+                # Print compact stats to track drift over time
+                print(f"[RL DEBUG] layer=1 router.weight norm={w.norm().item():.6e} mean={w.mean().item():.6e} std={w.std().item():.6e}")
+
+
         # Apply input jitter
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
