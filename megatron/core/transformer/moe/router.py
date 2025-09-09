@@ -522,7 +522,12 @@ class TopKRouter(Router):
                 routing_map=routing_map.view(seq_length, bsz, -1),
                 scores=scores,
             )
-            # print(f"[RL DEBUG] Layer {self.layer_number}: Trajectory decision added")
+            # MINIMAL POC: Apply RL loss immediately!
+            scores = self._trajectory_tracker.apply_rl_loss_to_scores(
+                self.layer_number,
+                scores
+            )
+            # print(f"[RL DEBUG] Layer {self.layer_number}: Trajectory decision added + RL loss applied")
 
 
         # Prevent extra local tokens accumulation on evaluation or activation recomputation
