@@ -515,8 +515,6 @@ class TopKRouter(Router):
         # Track trajectory if enabled (for RL losses)
         if self._use_trajectory_tracking and self._trajectory_tracker is not None:
             # Store logits and routing decisions for trajectory tracking
-            from megatron.training.utils import print_rank_0
-            print_rank_0(f"[RL DBG Router L{self.layer_number}] torch.is_grad_enabled()={torch.is_grad_enabled()}, logits.requires_grad={original_logits_for_rl.requires_grad}")
             original_logits = logits.view(seq_length, bsz, -1)
             self._trajectory_tracker.add_layer_decision(
                 layer_num=self.layer_number,
