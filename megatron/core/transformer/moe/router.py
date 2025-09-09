@@ -515,6 +515,8 @@ class TopKRouter(Router):
         # Track trajectory if enabled (for RL losses)
         if self._use_trajectory_tracking and self._trajectory_tracker is not None:
             # Store logits and routing decisions for trajectory tracking
+            from megatron.training.utils import print_rank_0
+            print_rank_0(f"[RL DBG Router L{self.layer_number}] torch.is_grad_enabled()={torch.is_grad_enabled()}, logits.requires_grad={original_logits_for_rl.requires_grad}")
             original_logits = logits.view(seq_length, bsz, -1)
             self._trajectory_tracker.add_layer_decision(
                 layer_num=self.layer_number,
@@ -540,7 +542,21 @@ class TopKRouter(Router):
             input (torch.Tensor): Input tensor.
         """
         self._maintain_float32_expert_bias()
+        
+        # Debug: print layer-1 router weight stats each forward to observe changes across steps
+        if getattr(self, "layer_number", None) == 1:
+            from megatron.core import parallel_state as mpu
+            if mpu.get_data_parallel_rank() == 0 and self.weight is not None:
+                w = self.weight.data
+                # Print compact stats to track drift over time
+                print(f"[RL DEBUG] layer=1 router.weight norm={w.norm().item():.6e} mean={w.mean().item():.6e} std={w.std().item():.6e}")
 
+
+        # --- RL DEBUG: Check gradient status of gating inputs ---
+        if self.layer_number == 1:
+            from megatron.training.utils import print_rank_0
+            print_rank_0(f"[RL DBG Router L{self.layer_number}] PRE-GATING: input.requires_grad={input.requires_grad}, self.weight.requires_grad={self.weight.requires_grad}")
+            
         # Apply input jitter
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
