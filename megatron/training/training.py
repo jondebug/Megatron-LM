@@ -1222,6 +1222,19 @@ def setup_model_and_optimizer(
     model = get_model(model_provider_func, model_type)
     unwrapped_model = unwrap_model(model)
 
+    # Check if router-only training is configured
+    if args.router_only_training:
+        print_rank_0("\n[ROUTER-ONLY] Verifying router-only configuration...")
+        router_count = 0
+        non_router_count = 0
+        for model_chunk in model:
+            for name, param in model_chunk.named_parameters():
+                if param.requires_grad:
+                    router_count += 1
+                else:
+                    non_router_count += 1
+        print_rank_0(f"[ROUTER-ONLY] Model provider has returned {router_count} trainable params (routers) and {non_router_count} frozen params")
+
     kwargs = {}
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args, f.name):
@@ -1403,6 +1416,8 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             forward_only=False,
             adjust_tensor_shapes_fn=adjust_tensor_shapes_fn,
         )
+    from megatron.training.utils import print_rank_0
+    print_rank_0(f"[TRAINING STEP DEBUG] losses_reduced: {losses_reduced}")
     should_checkpoint, should_exit, exit_code = rerun_state_machine.should_checkpoint_and_exit()
     if should_exit:
         return {}, True, should_checkpoint, should_exit, exit_code, None, None
@@ -1419,8 +1434,6 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
     # [RL DEBUG] Reliable grad check after backward pass is complete.
     if args.use_rl_loss:
         try:
-            from megatron.training.utils import print_rank_0
-            from megatron.core import parallel_state as mpu
             if mpu.get_data_parallel_rank() == 0:
                 # Access the underlying model through DDP's .module and Float16Module's .module.
                 # The correct path is model -> decoder -> layers -> mlp -> router
@@ -1436,7 +1449,33 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
     # Update parameters.
 
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
+
+    # Debug: Check if any parameters have requires_grad=True
+    verbose_debug_prints = False
+    from megatron.core import parallel_state as mpu
+    if args.router_only_training and verbose_debug_prints:
+        print_rank_0(f"[OPTIMIZER DEBUG] Pipeline rank: {mpu.get_pipeline_model_parallel_rank()+1}/{mpu.get_pipeline_model_parallel_world_size()}")
+        
+        # First, check what parameters the model has
+        print_rank_0("\n[MODEL PARAMS DEBUG] Checking model parameters:")
+        model_router_params = 0
+        trainable_params = 0
+        for i, model_module in enumerate(model):
+            for name, param in model_module.named_parameters():
+                if 'router' in name.lower() and 'weight' in name:
+                    print_rank_0(f"  Model[{i}] {name}: shape={list(param.shape)}, requires_grad={param.requires_grad}, id={id(param)}, main_grad={param.main_grad.mean()}")
+                    model_router_params += 1
+                    if param.requires_grad:
+                        trainable_params += 1
+                else:
+                    if param.requires_grad:
+                        print_rank_0(f"another param is trainable:  Model[{i}] {name}: shape={list(param.shape)}, requires_grad={param.requires_grad}, id={id(param)}")
+                        trainable_params += 1
+        print_rank_0(f"  Total router params in model: {model_router_params}")
+        print_rank_0(f"  Total trainable params in model: {trainable_params}")
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+    if args.router_only_training and verbose_debug_prints:
+        print_rank_0(f"[RL GRAD CHECK] After optimizer.step(), grad_norm is: {grad_norm}")
     timers('optimizer').stop()
 
     # when freezing sub-models we may have a mixture of successful and unsucessful ranks,
@@ -1761,6 +1800,8 @@ def training_log(
         log_string += f' loss scale: {loss_scale:.1f} |'
         if grad_norm is not None:
             log_string += f' grad norm: {grad_norm:.3f} |'
+        else:
+            log_string += f' grad norm: None |'
         if num_zeros_in_grad is not None:
             log_string += f' num zeros: {num_zeros_in_grad} |'
         if params_norm is not None:
