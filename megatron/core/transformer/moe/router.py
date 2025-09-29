@@ -136,11 +136,26 @@ class TopKRouter(Router):
         self.routing_type = self.config.moe_router_load_balancing_type
         self.score_function = self.config.moe_router_score_function
         self.input_jitter = None
+        
+        # DEBUG: Register backward hook to check gradients
+        def check_weight_grad(grad):
+            if self.layer_number == 1:
+                from megatron.training.utils import print_rank_0
+                print_rank_0(f"[GRAD HOOK DEBUG L1] HOOK CALLED! grad is {'not None' if grad is not None else 'None'}")
+                if grad is not None:
+                    grad_norm = grad.norm().item()
+                    grad_max = grad.abs().max().item()
+                    grad_mean = grad.mean().item()
+                    print_rank_0(f"[GRAD HOOK DEBUG L{self.layer_number}] router.weight.main_grad norm={grad_norm:.6e}, max={grad_max:.6e}, mean={grad_mean:.6e}")
+                else:
+                    print_rank_0(f"[GRAD HOOK DEBUG L{self.layer_number}] router.weight.main_grad is None in hook!")
+            return grad
+        # self.weight.register_hook(check_weight_grad)
 
         # RL trajectory tracking (enabled via config.moe_router_use_trajectory_tracking)
         self._trajectory_tracker = None
         self._use_trajectory_tracking = getattr(self.config, 'moe_router_use_trajectory_tracking', False)
-        print(f"[RL DEBUG] Using RL trajectory tracking object: {self._use_trajectory_tracking}, _TRAJECTORY_AVAILABLE: {_TRAJECTORY_AVAILABLE}")
+        # print(f"[RL DEBUG] Using RL trajectory tracking object: {self._use_trajectory_tracking}, _TRAJECTORY_AVAILABLE: {_TRAJECTORY_AVAILABLE}")
         if self._use_trajectory_tracking and _TRAJECTORY_AVAILABLE:
             from megatron_patch.model.qwen3_moe.moe.rl_trajectory import get_trajectory_tracker  # type: ignore
             self._trajectory_tracker = get_trajectory_tracker()
@@ -249,7 +264,6 @@ class TopKRouter(Router):
             score_function=self.score_function,
             expert_bias=self.expert_bias,
         )
-
         if self.training and torch.is_grad_enabled():
             # Apply auxiliary load balancing loss
             # Skip auxiliary loss calculations when using torch.no_grad() or checkpointing.
@@ -545,29 +559,50 @@ class TopKRouter(Router):
             input (torch.Tensor): Input tensor.
         """
         self._maintain_float32_expert_bias()
-        
+
         # Debug: print layer-1 router weight stats each forward to observe changes across steps
-        if getattr(self, "layer_number", None) == 1:
+        if self.layer_number == 1:
             from megatron.core import parallel_state as mpu
             if mpu.get_data_parallel_rank() == 0 and self.weight is not None:
                 w = self.weight.data
-                # Print compact stats to track drift over time
-                print(f"[RL DEBUG] layer=1 router.weight norm={w.norm().item():.6e} mean={w.mean().item():.6e} std={w.std().item():.6e}")
+                print(f"[ROUTER DEBUG] layer={self.layer_number} router.weight norm={w.norm().item():.6e} mean={w.mean().item():.6e} std={w.std().item():.6e}")
+                if self.weight.main_grad is not None:
+                    grad_norm = self.weight.main_grad.norm().item()
+                    grad_max = self.weight.main_grad.abs().max().item()
+                    grad_mean = self.weight.main_grad.mean().item()
+                    print(f"[RL DEBUG] layer={self.layer_number} router.weight.main_grad norm={grad_norm:.6e} max={grad_max:.6e} mean={grad_mean:.6e}")
+                    from megatron.training import get_args
+                    args = get_args()
+                    lr = getattr(args, 'lr', 1e-4)
+                    expected_change = lr * grad_max
+                    print(f"[RL DEBUG] layer={self.layer_number} LR={lr:.6e}, expected max weight change={expected_change:.6e}")
+                else:
+                    print(f"[RL DEBUG] layer={self.layer_number} router.weight.main_grad is None!")
 
+        # Ensure gradients are enabled for the router gating and aux-loss path
+        # even during activation recomputation/checkpointing.
 
-        # --- RL DEBUG: Check gradient status of gating inputs ---
+        # grad_ctx = torch.enable_grad() if self.training else nullcontext()
+        # with grad_ctx:
         if self.layer_number == 1:
             from megatron.training.utils import print_rank_0
             print_rank_0(f"[RL DBG Router L{self.layer_number}] PRE-GATING: input.requires_grad={input.requires_grad}, self.weight.requires_grad={self.weight.requires_grad}")
-            
-        # Apply input jitter
+
+        # Apply input jitter and compute logits
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
 
+        if self.layer_number == 1:
+            from megatron.training.utils import print_rank_0
+            print_rank_0(f"[RL DBG Router L{self.layer_number}] Post-GATING: input.requires_grad={input.requires_grad}, self.weight.requires_grad={self.weight.requires_grad}, logits.requires_grad={logits.requires_grad}")
+
         if self.config.moe_router_force_load_balancing:
-            # Apply force load balancing with random logits for benchmark
             logits = apply_random_logits(logits)
 
         scores, routing_map = self.routing(logits)
+        
+        # # Restore gradient state
+        # if self.training:
+        #     torch.set_grad_enabled(prev_grad_enabled)
 
         return scores, routing_map
