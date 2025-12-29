@@ -357,14 +357,15 @@ def get_ltor_masks_and_position_ids(
 
     return attention_mask, loss_mask, position_ids
 
-
-def print_rank_0(message):
+DEBUG_MODE = False
+def print_rank_0(message, override_debug_mode=False):
     """If distributed is initialized, print only on rank 0."""
-    if torch.distributed.is_initialized():
-        if torch.distributed.get_rank() == 0:
+    if DEBUG_MODE or override_debug_mode:
+        if torch.distributed.is_initialized():
+            if torch.distributed.get_rank() == 0:
+                print(message, flush=True)
+        else:
             print(message, flush=True)
-    else:
-        print(message, flush=True)
 
 
 def is_rank0():
