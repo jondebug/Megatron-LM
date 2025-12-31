@@ -338,15 +338,15 @@ class TopKRouter(Router):
     ):
         """Calculate auxiliary loss, attach gradient function to activation and add to logging."""
         moe_aux_loss_coeff = self.config.moe_aux_loss_coeff
-        if moe_aux_loss_coeff == 0:
-            return activation
 
         sequence_partition_group = None
         if self.tp_cp_group.size() > 1:
             sequence_partition_group = self.tp_cp_group
 
+        # Use coeff=1.0 for computation if coeff is 0 (just for logging, won't apply loss)
+        compute_coeff = moe_aux_loss_coeff if moe_aux_loss_coeff != 0 else 1.0
         aux_loss_result = load_balancing_loss_func(
-            moe_aux_loss_coeff=moe_aux_loss_coeff, sequence_partition_group=sequence_partition_group
+            moe_aux_loss_coeff=compute_coeff, sequence_partition_group=sequence_partition_group
         )
         
         # Handle both old and new return formats for backward compatibility
@@ -414,11 +414,16 @@ class TopKRouter(Router):
         
         save_to_aux_losses_tracker(
             "load_balancing_loss",
-            aux_loss / moe_aux_loss_coeff,
+            aux_loss / compute_coeff,
             self.layer_number,
             self.config.num_layers,
             reduce_group=sequence_partition_group,
         )
+        
+        # Skip applying aux loss to activation if coeff is 0
+        if moe_aux_loss_coeff == 0:
+            return activation
+            
         if self.calculate_per_token_loss:
             # Scale the aux_loss by the number of tokens.
             # The expected final scaling for aux_loss gradients is 1/(num_micro_batches * dp_size).
