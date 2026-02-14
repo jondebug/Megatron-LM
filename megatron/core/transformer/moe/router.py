@@ -540,6 +540,19 @@ class TopKRouter(Router):
             self.config.num_layers,
         )
 
+        # Always log max_tokens_per_expert (including during eval) so that
+        # num_tokens_on_critical_path is available in eval metrics.
+        # The aux_loss path only logs this during training, leaving it 0 during eval.
+        if not (self.training and torch.is_grad_enabled()):
+            tokens_per_expert = routing_map.sum(dim=0)
+            max_tokens = tokens_per_expert.max()
+            save_to_aux_losses_tracker(
+                "max_tokens_per_expert",
+                max_tokens,
+                self.layer_number,
+                self.config.num_layers,
+            )
+
 
         # Prevent extra local tokens accumulation on evaluation or activation recomputation
         if self.enable_expert_bias and torch.is_grad_enabled():
