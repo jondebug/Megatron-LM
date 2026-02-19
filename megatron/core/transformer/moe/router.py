@@ -489,6 +489,23 @@ class TopKRouter(Router):
         else:
             return input
 
+    def _apply_topology_bias(self, logits: torch.Tensor) -> torch.Tensor:
+        """Add a non-trainable bias to local expert logits before top-k selection.
+
+        Each EP rank biases toward its own local experts, reducing cross-GPU
+        all-to-all communication without changing any trainable parameters.
+        """
+        lambda_t = getattr(self, '_topology_lambda', 0.01)
+        ep_rank = parallel_state.get_expert_model_parallel_rank()
+        ep_size = parallel_state.get_expert_model_parallel_world_size()
+        num_experts = self.config.num_moe_experts
+        num_local = num_experts // ep_size
+        local_start = ep_rank * num_local
+
+        locality_bias = torch.zeros(num_experts, device=logits.device, dtype=logits.dtype)
+        locality_bias[local_start:local_start + num_local] = lambda_t
+        return logits + locality_bias
+
     def routing(self, logits: torch.Tensor):
         """Top-k routing function
 
@@ -549,6 +566,23 @@ class TopKRouter(Router):
             save_to_aux_losses_tracker(
                 "max_tokens_per_expert",
                 max_tokens,
+                self.layer_number,
+                self.config.num_layers,
+            )
+
+        # Log locality ratio: fraction of token-expert assignments that are local to this rank
+        ep_size = parallel_state.get_expert_model_parallel_world_size()
+        if ep_size > 1:
+            ep_rank = parallel_state.get_expert_model_parallel_rank()
+            num_experts = self.config.num_moe_experts
+            num_local = num_experts // ep_size
+            local_start = ep_rank * num_local
+            local_assignments = routing_map[:, local_start:local_start + num_local].sum()
+            total_assignments = routing_map.sum().clamp(min=1.0)
+            locality_ratio = local_assignments / total_assignments
+            save_to_aux_losses_tracker(
+                "locality_ratio",
+                locality_ratio,
                 self.layer_number,
                 self.config.num_layers,
             )
@@ -615,6 +649,9 @@ class TopKRouter(Router):
 
         if self.config.moe_router_force_load_balancing:
             logits = apply_random_logits(logits)
+        
+        if getattr(self, '_topology_aware', False):
+            logits = self._apply_topology_bias(logits)
 
         scores, routing_map = self.routing(logits)
 
