@@ -183,6 +183,16 @@ class TopKRouter(Router):
             self.local_tokens_per_expert = None
             self.expert_bias = None
 
+        # Critical-path dynamic bias: per-expert bias targeting only the peak experts
+        self._critical_path_bias_enabled = False
+        self._critical_path_topn = 1
+        self._critical_path_alpha = 0.001
+        self.register_buffer(
+            'critical_path_bias',
+            torch.zeros(self.config.num_moe_experts, dtype=torch.float32),
+            persistent=False,
+        )
+
     def _maintain_float32_expert_bias(self):
         """
         Maintain the expert bias in float32.
@@ -489,6 +499,27 @@ class TopKRouter(Router):
         else:
             return input
 
+    def _apply_critical_path_bias(self, logits: torch.Tensor) -> torch.Tensor:
+        """Add critical-path bias to logits before top-k selection.
+
+        The bias is negative for overloaded experts, discouraging tokens from
+        routing to them. Updated after each batch via _update_critical_path_bias().
+        """
+        if self.critical_path_bias.dtype != logits.dtype:
+            return logits + self.critical_path_bias.to(dtype=logits.dtype)
+        return logits + self.critical_path_bias
+
+    def _update_critical_path_bias(self, routing_map: torch.Tensor):
+        """Update critical-path bias after a batch: penalize the top-N most loaded experts.
+
+        Only runs during training with gradients enabled (not during eval or recompute).
+        """
+        with torch.no_grad():
+            tokens_per_expert = routing_map.sum(dim=0).float()
+            topn = min(self._critical_path_topn, tokens_per_expert.shape[0])
+            _, hot_indices = tokens_per_expert.topk(topn)
+            self.critical_path_bias[hot_indices] -= self._critical_path_alpha
+
     def _apply_topology_bias(self, logits: torch.Tensor) -> torch.Tensor:
         """Add a non-trainable bias to local expert logits before top-k selection.
 
@@ -569,6 +600,11 @@ class TopKRouter(Router):
                 self.layer_number,
                 self.config.num_layers,
             )
+
+        # Accumulate expert loads for heatmap (works with or without RL)
+        if self._use_trajectory_tracking and self._trajectory_tracker is not None:
+            if getattr(self._trajectory_tracker, 'log_expert_heatmap', False):
+                self._trajectory_tracker.accumulate_expert_loads(self.layer_number, routing_map)
 
         # Log locality ratio: fraction of token-expert assignments that are local to this rank
         ep_size = parallel_state.get_expert_model_parallel_world_size()
@@ -653,19 +689,32 @@ class TopKRouter(Router):
         if getattr(self, '_topology_aware', False):
             logits = self._apply_topology_bias(logits)
 
+        if self._critical_path_bias_enabled:
+            logits = self._apply_critical_path_bias(logits)
+
         scores, routing_map = self.routing(logits)
+
+        if self._critical_path_bias_enabled and self.training and torch.is_grad_enabled():
+            self._update_critical_path_bias(routing_map)
 
         # Track trajectory if enabled (for RL losses)
         if self._use_trajectory_tracking and self._trajectory_tracker is not None:
-            # Store logits and routing decisions for trajectory tracking
             seq_length, bsz = logits.shape[:2]
 
             self._trajectory_tracker.add_layer_decision(
                 layer_num=self.layer_number,
                 latent_token_representations=input,
                 routing_map=routing_map.view(seq_length, bsz, -1),
-                routing_logits=logits.view(seq_length, bsz, -1),  # Pass logits for computing log probs
+                routing_logits=logits.view(seq_length, bsz, -1),
             )
+
+            # PPO re-evaluation: compute current policy's logits for old states
+            if getattr(self._trajectory_tracker, 'ppo_reeval', False) and \
+               self.layer_number in getattr(self._trajectory_tracker, 'old_layer_decisions', {}):
+                old_latent = self._trajectory_tracker.old_layer_decisions[self.layer_number][0]
+                with torch.no_grad():
+                    reeval_logits = self.gating(old_latent)
+                self._trajectory_tracker.reeval_logits[self.layer_number] = reeval_logits.view(seq_length, bsz, -1)
             # scores = self._trajectory_tracker.apply_rl_loss_to_scores(
             #     self.layer_number,
             #     scores
